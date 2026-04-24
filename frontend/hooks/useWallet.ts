@@ -9,10 +9,10 @@ import {
 } from '@/lib/wallet';
 import type { SupportedWallet, WalletSession } from '@/lib/wallet/types';
 
-// Storage keys for persistence
 const WALLET_SESSION_STORAGE_KEY = 'stellar_route:wallet_session';
 const AUTO_RECONNECT_PREF_STORAGE_KEY = 'stellar_route:wallet_auto_reconnect';
 const LAST_WALLET_ID_STORAGE_KEY = 'stellar_route:last_wallet_id';
+const MAX_RECONNECT_ATTEMPTS = 3;
 
 const initialState: WalletSession = {
   walletId: null,
@@ -21,7 +21,12 @@ const initialState: WalletSession = {
   isConnected: false,
 };
 
-export interface UseWalletState extends WalletSession {
+export interface UseWalletState {
+  session: WalletSession;
+  walletId: WalletSession['walletId'];
+  address: WalletSession['address'];
+  network: WalletSession['network'];
+  isConnected: WalletSession['isConnected'];
   availableWallets: { id: SupportedWallet; label: string }[];
   loading: boolean;
   error: string | null;
@@ -32,9 +37,65 @@ export interface UseWalletState extends WalletSession {
   connect: (walletId: SupportedWallet, enableAutoReconnect?: boolean) => Promise<void>;
   disconnect: (clearPreference?: boolean) => void;
   copyAddress: () => Promise<void>;
-  signTransactionStub: (tx: string) => Promise<string>;
+  signTransactionStub: typeof signTransactionStub;
   setAutoReconnectEnabled: (enabled: boolean) => void;
   attemptReconnect: () => Promise<void>;
+}
+
+function canUseStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function readStorage(key: string): string | null {
+  if (!canUseStorage()) {
+    return null;
+  }
+
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string) {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures and keep runtime state authoritative.
+  }
+}
+
+function removeStorage(key: string) {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage failures and keep runtime state authoritative.
+  }
+}
+
+function getErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+
+  if (message.includes('reject')) {
+    return 'Connection request was rejected.';
+  }
+  if (message.includes('lock')) {
+    return 'Wallet is locked. Unlock it and try again.';
+  }
+  if (message.includes('not installed')) {
+    return 'Wallet not installed.';
+  }
+
+  return 'Unable to connect wallet.';
 }
 
 export function useWallet(): UseWalletState {
@@ -49,179 +110,160 @@ export function useWallet(): UseWalletState {
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [lastConnectedWalletId, setLastConnectedWalletId] = useState<SupportedWallet | null>(null);
 
-  // 🔹 Load available wallets on mount
-  useEffect(() => {
-    loadWallets();
-    loadPersistedState();
-  }, []);
-
-  // 🔹 Auto-reconnect on mount if preference is enabled and not already connected
-  useEffect(() => {
-    if (isAutoReconnectEnabled && !session.isConnected && lastConnectedWalletId && !isRecovering) {
-      attemptReconnect();
-    }
-  }, [isAutoReconnectEnabled, lastConnectedWalletId, session.isConnected]);
-
-  // 🔹 Listen for wallet disconnect events
-  useEffect(() => {
-    const handleWalletDisconnect = () => {
-      if (session.isConnected) {
-        setError('Wallet disconnected. Attempting to reconnect...');
-        if (isAutoReconnectEnabled) {
-          attemptReconnect();
-        }
-      }
-    };
-
-    // Listen for visibility changes to trigger reconnect when app regains focus
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && isAutoReconnectEnabled && !session.isConnected) {
-        attemptReconnect();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('online', handleWalletDisconnect);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('online', handleWalletDisconnect);
-    };
-  }, [session.isConnected, isAutoReconnectEnabled, lastConnectedWalletId]);
-
-  const loadWallets = async () => {
+  const loadWallets = useCallback(async () => {
     try {
       const wallets = await getAvailableWallets();
-      setAvailableWallets(wallets);
+      setAvailableWallets(wallets.map(({ id, label }) => ({ id, label })));
       return wallets;
     } catch {
       setAvailableWallets([]);
-    }
-  };
-
-  /** Load persisted preferences and previous session from localStorage */
-  const loadPersistedState = useCallback(() => {
-    try {
-      const savedAutoReconnect = localStorage.getItem(AUTO_RECONNECT_PREF_STORAGE_KEY);
-      const savedWalletId = localStorage.getItem(LAST_WALLET_ID_STORAGE_KEY);
-      const savedSession = localStorage.getItem(WALLET_SESSION_STORAGE_KEY);
-
-      if (savedAutoReconnect === 'true' && savedWalletId) {
-        setIsAutoReconnectEnabled(true);
-        setLastConnectedWalletId(savedWalletId as SupportedWallet);
-      }
-
-      // Restore session state if available
-      if (savedSession) {
-        try {
-          const session = JSON.parse(savedSession);
-          setSession(session);
-        } catch {
-          // Invalid JSON, skip restoration
-        }
-      }
-    } catch {
-      // localStorage not available or other error
+      return [];
     }
   }, []);
 
-  // 🔹 Connect wallet
+  const persistSession = useCallback((nextSession: WalletSession) => {
+    writeStorage(WALLET_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
+    if (nextSession.walletId) {
+      writeStorage(LAST_WALLET_ID_STORAGE_KEY, nextSession.walletId);
+    }
+  }, []);
+
+  const performConnect = useCallback(
+    async (walletId: SupportedWallet) => {
+      const nextSession = await connectWallet(walletId);
+      setSession(nextSession);
+      setLastConnectedWalletId(nextSession.walletId);
+      setReconnectAttempts(0);
+      setIsRecovering(false);
+      persistSession(nextSession);
+      return nextSession;
+    },
+    [persistSession],
+  );
+
+  const loadPersistedState = useCallback(() => {
+    const savedWalletId = readStorage(LAST_WALLET_ID_STORAGE_KEY) as SupportedWallet | null;
+    const savedAutoReconnect = readStorage(AUTO_RECONNECT_PREF_STORAGE_KEY);
+    const savedSession = readStorage(WALLET_SESSION_STORAGE_KEY);
+
+    if (savedWalletId) {
+      setLastConnectedWalletId(savedWalletId);
+    }
+
+    if (savedAutoReconnect === 'true') {
+      setIsAutoReconnectEnabled(true);
+    }
+
+    if (!savedSession) {
+      return;
+    }
+
+    try {
+      const parsedSession = JSON.parse(savedSession) as WalletSession;
+      if (!parsedSession.isConnected) {
+        setSession(parsedSession);
+      }
+    } catch {
+      removeStorage(WALLET_SESSION_STORAGE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWallets();
+    loadPersistedState();
+  }, [loadPersistedState, loadWallets]);
+
   const connect = useCallback(
     async (walletId: SupportedWallet, enableAutoReconnect = false) => {
       try {
         setLoading(true);
         setError(null);
 
-        const next = await connectWallet(walletId);
-
-        setSession({
-          walletId: next.walletId,
-          address: next.address,
-          network: next.network,
-          isConnected: true,
-        });
-
-        // Persist session and preferences
-        try {
-          localStorage.setItem(
-            WALLET_SESSION_STORAGE_KEY,
-            JSON.stringify({
-              walletId: next.walletId,
-              address: next.address,
-              network: next.network,
-              isConnected: true,
-            })
-          );
-          localStorage.setItem(LAST_WALLET_ID_STORAGE_KEY, next.walletId);
-          if (enableAutoReconnect) {
-            localStorage.setItem(AUTO_RECONNECT_PREF_STORAGE_KEY, 'true');
-            setIsAutoReconnectEnabled(true);
-          }
-        } catch {
-          // localStorage not available, continue without persistence
+        const nextSession = await performConnect(walletId);
+        if (enableAutoReconnect) {
+          writeStorage(AUTO_RECONNECT_PREF_STORAGE_KEY, 'true');
+          setIsAutoReconnectEnabled(true);
         }
 
-        setReconnectAttempts(0);
-        setIsRecovering(false);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message.toLowerCase() : '';
-
-        if (msg.includes('reject')) {
-          setError('Connection request was rejected.');
-        } else if (msg.includes('lock')) {
-          setError('Wallet is locked. Unlock it and try again.');
-        } else if (msg.includes('not installed')) {
-          setError('Wallet not installed.');
-        } else {
-          setError('Unable to connect wallet.');
-        }
+        persistSession(nextSession);
+      } catch (connectError) {
+        setSession(initialState);
+        setError(getErrorMessage(connectError));
       } finally {
         setLoading(false);
       }
     },
-    []
+    [performConnect, persistSession],
   );
 
-  /** Attempt to reconnect to previously connected wallet */
   const attemptReconnect = useCallback(async () => {
-    if (!lastConnectedWalletId || reconnectAttempts >= 3) {
+    if (!lastConnectedWalletId || reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       setIsRecovering(false);
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        setError('Failed to reconnect wallet. Please try again manually.');
+      }
       return;
     }
 
+    setLoading(true);
     setIsRecovering(true);
-    setReconnectAttempts((prev) => prev + 1);
+    setError('Wallet disconnected. Attempting to reconnect...');
 
     try {
-      await connect(lastConnectedWalletId);
+      await performConnect(lastConnectedWalletId);
+      setError(null);
     } catch {
-      // Reconnect failed, will retry on next attempt or manual trigger
-      // After max retries, user must manually reconnect
-      if (reconnectAttempts >= 2) {
-        setIsRecovering(false);
-        setError('Failed to reconnect wallet. Please try again manually.');
-      }
+      setReconnectAttempts((currentAttempts) => currentAttempts + 1);
+      setSession(initialState);
+    } finally {
+      setLoading(false);
+      setIsRecovering(false);
     }
-  }, [lastConnectedWalletId, reconnectAttempts, connect]);
+  }, [lastConnectedWalletId, performConnect, reconnectAttempts]);
 
-  // 🔹 Disconnect wallet
+  useEffect(() => {
+    if (!isAutoReconnectEnabled || session.isConnected || !lastConnectedWalletId || isRecovering) {
+      return;
+    }
+
+    void attemptReconnect();
+  }, [attemptReconnect, isAutoReconnectEnabled, isRecovering, lastConnectedWalletId, session.isConnected]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isAutoReconnectEnabled && !session.isConnected) {
+        void attemptReconnect();
+      }
+    };
+
+    const handleOnline = () => {
+      if (isAutoReconnectEnabled && !session.isConnected) {
+        void attemptReconnect();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [attemptReconnect, isAutoReconnectEnabled, session.isConnected]);
+
   const disconnect = useCallback((clearPreference = false) => {
     disconnectWallet();
     setSession(initialState);
     setError(null);
+    setIsRecovering(false);
     setReconnectAttempts(0);
+    removeStorage(WALLET_SESSION_STORAGE_KEY);
 
-    // Clear localStorage if requested
     if (clearPreference) {
-      try {
-        localStorage.removeItem(WALLET_SESSION_STORAGE_KEY);
-        localStorage.removeItem(AUTO_RECONNECT_PREF_STORAGE_KEY);
-        localStorage.removeItem(LAST_WALLET_ID_STORAGE_KEY);
-        setIsAutoReconnectEnabled(false);
-        setLastConnectedWalletId(null);
-      } catch {
-        // localStorage not available
-      }
+      removeStorage(AUTO_RECONNECT_PREF_STORAGE_KEY);
+      removeStorage(LAST_WALLET_ID_STORAGE_KEY);
+      setIsAutoReconnectEnabled(false);
+      setLastConnectedWalletId(null);
     }
   }, []);
 
@@ -242,23 +284,21 @@ export function useWallet(): UseWalletState {
     }
   }, [session.address]);
 
-  /** Toggle auto-reconnect preference */
   const setAutoReconnectPreference = useCallback((enabled: boolean) => {
-    try {
-      if (enabled) {
-        localStorage.setItem(AUTO_RECONNECT_PREF_STORAGE_KEY, 'true');
-      } else {
-        localStorage.removeItem(AUTO_RECONNECT_PREF_STORAGE_KEY);
-      }
-      setIsAutoReconnectEnabled(enabled);
-    } catch {
-      // localStorage not available
-      setIsAutoReconnectEnabled(enabled);
+    if (enabled) {
+      writeStorage(AUTO_RECONNECT_PREF_STORAGE_KEY, 'true');
+    } else {
+      removeStorage(AUTO_RECONNECT_PREF_STORAGE_KEY);
     }
+    setIsAutoReconnectEnabled(enabled);
   }, []);
 
   return {
-    ...session,
+    session,
+    walletId: session.walletId,
+    address: session.address,
+    network: session.network,
+    isConnected: session.isConnected,
     availableWallets,
     loading,
     error,

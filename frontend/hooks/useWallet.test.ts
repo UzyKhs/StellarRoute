@@ -7,6 +7,7 @@ import * as freighter from "@stellar/freighter-api";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
 
 describe("useWallet – initial state", () => {
@@ -115,5 +116,40 @@ describe("useWallet – disconnect", () => {
     expect(result.current.session.address).toBeNull();
     expect(result.current.session.walletId).toBeNull();
     expect(result.current.error).toBeNull();
+  });
+
+  it("persists auto reconnect preference when enabled during connect", async () => {
+    vi.mocked(freighter.requestAccess).mockResolvedValueOnce({ address: "GABCDEFGHIJKLMNOPWXYZ" });
+    vi.mocked(freighter.getAddress).mockResolvedValueOnce({ address: "GABCDEFGHIJKLMNOPWXYZ" });
+    vi.mocked(freighter.getNetworkDetails).mockResolvedValueOnce({
+      network: "testnet",
+      networkUrl: "",
+      networkPassphrase: "",
+    });
+
+    const { result } = renderHook(() => useWallet());
+
+    await act(async () => {
+      await result.current.connect("freighter", true);
+    });
+
+    expect(result.current.isAutoReconnectEnabled).toBe(true);
+    expect(window.localStorage.getItem("stellar_route:wallet_auto_reconnect")).toBe("true");
+    expect(window.localStorage.getItem("stellar_route:last_wallet_id")).toBe("freighter");
+  });
+
+  it("clears persisted preference when disconnect is called with clearPreference", async () => {
+    window.localStorage.setItem("stellar_route:wallet_auto_reconnect", "true");
+    window.localStorage.setItem("stellar_route:last_wallet_id", "freighter");
+
+    const { result } = renderHook(() => useWallet());
+
+    act(() => {
+      result.current.disconnect(true);
+    });
+
+    expect(result.current.isAutoReconnectEnabled).toBe(false);
+    expect(window.localStorage.getItem("stellar_route:wallet_auto_reconnect")).toBeNull();
+    expect(window.localStorage.getItem("stellar_route:last_wallet_id")).toBeNull();
   });
 });
