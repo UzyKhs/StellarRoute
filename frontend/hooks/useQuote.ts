@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useQuoteRefresh } from './useQuoteRefresh';
+import { useQuoteRefresh } from './useQuoteRefreshEnhanced';
 import type { Asset, QuoteType } from '@/types';
 
 interface UseQuoteProps {
