@@ -1,7 +1,28 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { PriceQuote } from "@/types";
+
 import { RouteDisplay } from "./RouteDisplay";
+
+const sampleQuote: PriceQuote = {
+  base_asset: { asset_type: "native" },
+  quote_asset: { asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: "issuer" },
+  amount: "10",
+  price: "2.5",
+  total: "24.75",
+  quote_type: "sell",
+  path: [
+    {
+      from_asset: { asset_type: "native" },
+      to_asset: { asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: "issuer" },
+      price: "2.5",
+      source: "sdex",
+    },
+  ],
+  timestamp: 1,
+  price_impact: "0.42",
+};
 
 describe("RouteDisplay", () => {
   afterEach(() => cleanup());
@@ -76,5 +97,42 @@ describe("RouteDisplay", () => {
     });
 
     expect(screen.queryByTestId("alternative-route-route-0")).not.toBeInTheDocument();
+  });
+
+  it("opens the route detail drawer with hop data from the quote", () => {
+    render(
+      <RouteDisplay
+        amountOut="24.75"
+        quote={sampleQuote}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Show route details"));
+
+    expect(screen.getByRole("dialog", { name: "Route Details" })).toBeInTheDocument();
+    expect(screen.getByText("Hop 1")).toBeInTheDocument();
+    expect(screen.getByText("Stellar DEX (SDEX)")).toBeInTheDocument();
+  });
+
+  it("shows an alternative route tab and graceful empty-state when details are unavailable", () => {
+    render(
+      <RouteDisplay
+        amountOut="24.75"
+        quote={sampleQuote}
+        alternativeRoutes={[
+          {
+            id: "route-alt",
+            venue: "Blend Pool",
+            expectedAmount: "≈ 24.10",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("alternative-route-route-alt"));
+    fireEvent.click(screen.getByLabelText("Show route details"));
+    fireEvent.click(screen.getByTestId("route-detail-tab-alternative"));
+
+    expect(screen.getByText("No hop data available for this route.")).toBeInTheDocument();
   });
 });

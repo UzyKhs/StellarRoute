@@ -171,6 +171,9 @@ export function SwapCard() {
               />
               <RouteDisplay
                 amountOut={selectedRoute?.expectedAmount ?? toAmount}
+                quote={quote.data}
+                fromSymbol={fromSymbol}
+                toSymbol={toSymbol}
                 isLoading={quote.loading}
                 onSelect={setSelectedRoute}
               />

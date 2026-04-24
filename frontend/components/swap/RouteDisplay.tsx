@@ -1,10 +1,13 @@
 import { ArrowDown, ArrowRight, ChevronDown, Info } from "lucide-react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
+import type { PriceQuote } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { useVirtualWindow } from "@/hooks/useVirtualWindow";
 
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
+import { RouteDetailDrawer } from "./RouteDetailDrawer";
+import type { RouteDetailData } from "./RouteDetailDrawer";
 import { RouteDisplaySkeleton } from "./RouteDisplaySkeleton";
 
 export interface AlternativeRoute {
@@ -15,6 +18,9 @@ export interface AlternativeRoute {
 
 interface RouteDisplayProps {
   amountOut: string;
+  quote?: PriceQuote;
+  fromSymbol?: string;
+  toSymbol?: string;
   /** Route confidence score (0-100) */
   confidenceScore?: number;
   /** Market volatility level */
@@ -82,6 +88,9 @@ function AlternativeRouteButton({
 
 export function RouteDisplay({
   amountOut,
+  quote,
+  fromSymbol = "XLM",
+  toSymbol = "USDC",
   confidenceScore = 85,
   volatility = "low",
   isLoading = false,
@@ -97,6 +106,44 @@ export function RouteDisplay({
     setSelectedRouteId(route.id);
     onSelect?.(route);
   };
+
+  const selectedAlternativeRoute = useMemo(
+    () => routes.find((route) => route.id === selectedRouteId),
+    [routes, selectedRouteId],
+  );
+
+  const bestRouteDetails = useMemo<RouteDetailData>(() => {
+    const hops = (quote?.path ?? []).map((step) => ({
+      fromAsset: step.from_asset.asset_code || "XLM",
+      toAsset: step.to_asset.asset_code || "XLM",
+      venue: step.source === "sdex"
+        ? "Stellar DEX (SDEX)"
+        : step.source.startsWith("amm:")
+          ? `AMM Pool (${step.source.slice(4, 12)}...)`
+          : "Unknown Venue",
+      price: step.price,
+      fee: quote?.price_impact ? `${quote.price_impact}% est.` : undefined,
+    }));
+
+    return {
+      label: "Best Route",
+      outputAmount: quote?.total || amountOut,
+      priceImpact: quote?.price_impact ? `${quote.price_impact}%` : undefined,
+      hops,
+    };
+  }, [amountOut, quote]);
+
+  const alternativeRouteDetails = useMemo<RouteDetailData | undefined>(() => {
+    if (!selectedAlternativeRoute) {
+      return undefined;
+    }
+
+    return {
+      label: "Alternative Route",
+      outputAmount: selectedAlternativeRoute.expectedAmount,
+      hops: [],
+    };
+  }, [selectedAlternativeRoute]);
   const shouldVirtualize = routes.length > ROUTE_VIRTUALIZATION_THRESHOLD;
   const virtualWindow = useVirtualWindow({
     containerRef: scrollRef,
@@ -132,7 +179,7 @@ export function RouteDisplay({
           </Badge>
           <button
             type="button"
-            onClick={() => setShowDetails((prev) => !prev)}
+            onClick={() => setShowDetails(true)}
             aria-expanded={showDetails}
             aria-label="Show route details"
             className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md hover:bg-muted/50 focus:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all duration-150 active:scale-95"
@@ -146,7 +193,7 @@ export function RouteDisplay({
 
       <div className="flex flex-col sm:flex-row items-center bg-muted/50 rounded-lg p-3 overflow-hidden gap-1 sm:gap-0 sm:justify-between transition-colors duration-150 hover:bg-muted/70">
         <div className="flex flex-col flex-shrink-0 min-w-[40px] items-center sm:items-start">
-          <span className="text-xs font-semibold">XLM</span>
+          <span className="text-xs font-semibold">{fromSymbol}</span>
           <span className="text-[10px] text-muted-foreground leading-none">
             Stellar
           </span>
@@ -156,14 +203,14 @@ export function RouteDisplay({
         <ArrowRight className="h-4 w-4 text-muted-foreground mx-auto flex-shrink-0 hidden sm:block" />
 
         <div className="px-2 py-1 bg-background rounded-md border text-xs font-medium shadow-sm flex-shrink-0 text-center mx-1">
-          AQUA Pool
+          {bestRouteDetails.hops[0]?.venue || "Route Pending"}
         </div>
 
         <ArrowDown className="h-4 w-4 text-muted-foreground flex-shrink-0 sm:hidden" />
         <ArrowRight className="h-4 w-4 text-muted-foreground mx-auto flex-shrink-0 hidden sm:block" />
 
         <div className="flex flex-col text-right flex-shrink-0 min-w-[60px] items-center sm:items-end">
-          <span className="text-xs font-semibold">USDC</span>
+          <span className="text-xs font-semibold">{toSymbol}</span>
           <span
             className="text-[10px] text-muted-foreground truncate max-w-[80px]"
             title={`${amountOut} expected`}
@@ -225,6 +272,14 @@ export function RouteDisplay({
           )}
         </div>
       </div>
+
+      <RouteDetailDrawer
+        bestRoute={bestRouteDetails}
+        alternativeRoute={alternativeRouteDetails}
+        open={showDetails}
+        onClose={() => setShowDetails(false)}
+        initialRoute={selectedAlternativeRoute ? "alternative" : "best"}
+      />
     </div>
   );
 }

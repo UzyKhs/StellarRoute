@@ -1,57 +1,45 @@
 'use client';
 
-import React, { useState } from 'react';
-import type { PriceQuote, PathStep } from '@/types';
+import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronUp, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-interface RouteDetailDrawerProps {
-  /** The price quote containing the route data */
-  quote: PriceQuote | undefined;
-  /** Alternative route quote for comparison */
-  alternativeQuote?: PriceQuote;
-  /** Whether the drawer is open */
+export interface RouteDetailHop {
+  fromAsset: string;
+  toAsset: string;
+  venue: string;
+  price?: string;
+  fee?: string;
+}
+
+export interface RouteDetailData {
+  label: string;
+  outputAmount?: string;
+  priceImpact?: string;
+  hops: RouteDetailHop[];
+}
+
+export interface RouteDetailDrawerProps {
+  bestRoute: RouteDetailData;
+  alternativeRoute?: RouteDetailData;
   open: boolean;
-  /** Callback when drawer closes */
   onClose: () => void;
+  initialRoute?: 'best' | 'alternative';
 }
 
 interface HopDisplayProps {
-  step: PathStep;
+  hop: RouteDetailHop;
   stepNumber: number;
-  estimatedFee?: string;
   isExpanded: boolean;
   onToggle: () => void;
 }
 
-/** Format asset identifier for display */
-function formatAssetCode(assetCode?: string, assetIssuer?: string): string {
-  if (!assetCode) return 'XLM';
-  if (assetCode === 'XLM') return 'XLM';
-  return `${assetCode}`;
-}
-
-/** Extract venue name from source identifier */
-function getVenueName(source: string): string {
-  if (source === 'sdex') return 'Stellar DEX (SDEX)';
-  if (source.startsWith('amm:')) {
-    const poolId = source.slice(4);
-    return `AMM Pool (${poolId.slice(0, 8)}...)`;
-  }
-  return 'Unknown Venue';
-}
-
-/** Display a single hop in the route */
-function HopDetail({ step, stepNumber, estimatedFee, isExpanded, onToggle }: HopDisplayProps) {
-  const fromAsset = formatAssetCode(step.from_asset.asset_code, step.from_asset.asset_issuer);
-  const toAsset = formatAssetCode(step.to_asset.asset_code, step.to_asset.asset_issuer);
-  const venue = getVenueName(step.source);
-  const price = parseFloat(step.price);
-  const formattedPrice = price > 0 ? price.toFixed(6) : '0';
+function HopDetail({ hop, stepNumber, isExpanded, onToggle }: HopDisplayProps) {
+  const formattedPrice = hop.price?.trim() || 'Unavailable';
+  const formattedFee = hop.fee?.trim() || 'Unavailable';
 
   return (
     <div className="border border-gray-200 dark:border-gray-700 rounded-lg mb-3 overflow-hidden">
-      {/* Header - always visible */}
       <button
         onClick={onToggle}
         className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
@@ -61,24 +49,16 @@ function HopDetail({ step, stepNumber, estimatedFee, isExpanded, onToggle }: Hop
             Hop {stepNumber}
           </span>
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-gray-900 dark:text-white">
-              {fromAsset}
-            </span>
+            <span className="font-semibold text-gray-900 dark:text-white">{hop.fromAsset}</span>
             <span className="text-gray-400">→</span>
-            <span className="font-semibold text-gray-900 dark:text-white">
-              {toAsset}
-            </span>
+            <span className="font-semibold text-gray-900 dark:text-white">{hop.toAsset}</span>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {estimatedFee && (
-            <div className="text-right">
-              <p className="text-xs text-gray-500 dark:text-gray-400">Fee</p>
-              <p className="text-sm font-medium text-gray-900 dark:text-white">
-                {estimatedFee}
-              </p>
-            </div>
-          )}
+          <div className="text-right">
+            <p className="text-xs text-gray-500 dark:text-gray-400">Fee</p>
+            <p className="text-sm font-medium text-gray-900 dark:text-white">{formattedFee}</p>
+          </div>
           {isExpanded ? (
             <ChevronUp className="w-5 h-5 text-gray-400" />
           ) : (
@@ -87,13 +67,12 @@ function HopDetail({ step, stepNumber, estimatedFee, isExpanded, onToggle }: Hop
         </div>
       </button>
 
-      {/* Expanded details */}
       {isExpanded && (
         <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <p className="text-gray-600 dark:text-gray-400 mb-1">Venue</p>
-              <p className="font-medium text-gray-900 dark:text-white">{venue}</p>
+              <p className="font-medium text-gray-900 dark:text-white">{hop.venue}</p>
             </div>
             <div>
               <p className="text-gray-600 dark:text-gray-400 mb-1">Price</p>
@@ -101,11 +80,11 @@ function HopDetail({ step, stepNumber, estimatedFee, isExpanded, onToggle }: Hop
             </div>
             <div>
               <p className="text-gray-600 dark:text-gray-400 mb-1">From Asset</p>
-              <p className="font-medium text-gray-900 dark:text-white">{fromAsset}</p>
+              <p className="font-medium text-gray-900 dark:text-white">{hop.fromAsset}</p>
             </div>
             <div>
               <p className="text-gray-600 dark:text-gray-400 mb-1">To Asset</p>
-              <p className="font-medium text-gray-900 dark:text-white">{toAsset}</p>
+              <p className="font-medium text-gray-900 dark:text-white">{hop.toAsset}</p>
             </div>
           </div>
         </div>
@@ -114,26 +93,28 @@ function HopDetail({ step, stepNumber, estimatedFee, isExpanded, onToggle }: Hop
   );
 }
 
-/** Main RouteDetailDrawer component */
 export function RouteDetailDrawer({
-  quote,
-  alternativeQuote,
+  bestRoute,
+  alternativeRoute,
   open,
   onClose,
+  initialRoute = 'best',
 }: RouteDetailDrawerProps) {
   const [expandedHop, setExpandedHop] = useState<number | null>(null);
-  const [selectedRoute, setSelectedRoute] = useState<'best' | 'alternative'>('best');
+  const [selectedRoute, setSelectedRoute] = useState<'best' | 'alternative'>(initialRoute);
 
-  if (!open || !quote) return null;
+  useEffect(() => {
+    if (!open) {
+      setExpandedHop(null);
+      return;
+    }
 
-  const displayQuote = selectedRoute === 'alternative' && alternativeQuote ? alternativeQuote : quote;
-  const path = displayQuote.path || [];
-  const totalOutput = displayQuote.total || '0';
-  const priceImpact = displayQuote.price_impact || displayQuote.priceImpact;
+    setSelectedRoute(initialRoute);
+  }, [initialRoute, open]);
 
-  // Calculate estimated fees per hop (rough estimate based on total impact)
-  const hopeCount = path.length > 0 ? path.length : 1;
-  const avgFeePerHop = priceImpact ? (parseFloat(priceImpact) / hopeCount).toFixed(4) : '0.0000';
+  if (!open) return null;
+
+  const displayRoute = selectedRoute === 'alternative' && alternativeRoute ? alternativeRoute : bestRoute;
 
   return (
     <div
@@ -142,16 +123,13 @@ export function RouteDetailDrawer({
       aria-modal="true"
       aria-labelledby="route-drawer-title"
     >
-      {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
       />
 
-      {/* Drawer content */}
       <div className="relative w-full bg-white dark:bg-gray-900 rounded-t-2xl shadow-lg max-h-[90vh] overflow-y-auto">
-        {/* Header */}
         <div className="sticky top-0 px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
           <div className="flex items-center justify-between">
             <div>
@@ -175,12 +153,12 @@ export function RouteDetailDrawer({
           </div>
         </div>
 
-        {/* Route selector tabs */}
-        {alternativeQuote && (
+        {alternativeRoute && (
           <div className="px-6 pt-4 pb-3">
             <div className="flex gap-2">
               <button
                 onClick={() => setSelectedRoute('best')}
+                data-testid="route-detail-tab-best"
                 className={cn(
                   'px-4 py-2 rounded-lg font-medium text-sm transition-colors',
                   selectedRoute === 'best'
@@ -188,10 +166,11 @@ export function RouteDetailDrawer({
                     : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
                 )}
               >
-                Best Route
+                {bestRoute.label}
               </button>
               <button
                 onClick={() => setSelectedRoute('alternative')}
+                data-testid="route-detail-tab-alternative"
                 className={cn(
                   'px-4 py-2 rounded-lg font-medium text-sm transition-colors',
                   selectedRoute === 'alternative'
@@ -199,13 +178,12 @@ export function RouteDetailDrawer({
                     : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
                 )}
               >
-                Alternative
+                {alternativeRoute.label}
               </button>
             </div>
           </div>
         )}
 
-        {/* Route summary */}
         <div className="px-6 py-4 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -213,35 +191,33 @@ export function RouteDetailDrawer({
                 Output Amount
               </p>
               <p className="text-lg font-bold text-gray-900 dark:text-white mt-1">
-                {totalOutput}
+                {displayRoute.outputAmount?.trim() || 'Unavailable'}
               </p>
             </div>
-            {priceImpact && (
+            {displayRoute.priceImpact && (
               <div>
                 <p className="text-xs text-gray-600 dark:text-gray-400 uppercase tracking-wider">
                   Price Impact
                 </p>
                 <p className="text-lg font-bold text-red-600 dark:text-red-400 mt-1">
-                  {priceImpact}%
+                  {displayRoute.priceImpact}
                 </p>
               </div>
             )}
           </div>
         </div>
 
-        {/* Hops list */}
         <div className="px-6 py-6">
-          {path.length > 0 ? (
+          {displayRoute.hops.length > 0 ? (
             <>
               <h3 className="font-semibold text-gray-900 dark:text-white mb-4">
-                Trading Path ({path.length} hop{path.length !== 1 ? 's' : ''})
+                Trading Path ({displayRoute.hops.length} hop{displayRoute.hops.length !== 1 ? 's' : ''})
               </h3>
-              {path.map((step, index) => (
+              {displayRoute.hops.map((hop, index) => (
                 <HopDetail
-                  key={index}
-                  step={step}
+                  key={`${hop.venue}-${index}`}
+                  hop={hop}
                   stepNumber={index + 1}
-                  estimatedFee={avgFeePerHop}
                   isExpanded={expandedHop === index}
                   onToggle={() => setExpandedHop(expandedHop === index ? null : index)}
                 />
@@ -250,13 +226,12 @@ export function RouteDetailDrawer({
           ) : (
             <div className="text-center py-8">
               <p className="text-gray-600 dark:text-gray-400">
-                No route data available
+                No hop data available for this route.
               </p>
             </div>
           )}
         </div>
 
-        {/* Footer padding */}
         <div className="h-6" />
       </div>
     </div>
