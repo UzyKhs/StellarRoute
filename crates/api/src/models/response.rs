@@ -19,11 +19,24 @@ pub struct HealthResponse {
     pub components: std::collections::HashMap<String, ComponentStatus>,
 }
 
+/// External dependency health probe response for readiness checks.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DependenciesHealthResponse {
+    /// Overall dependency status: "ok" or "degraded"
+    pub status: String,
+    /// ISO-8601 UTC timestamp of this check
+    pub timestamp: String,
+    /// Per-dependency status map
+    pub components: std::collections::HashMap<String, String>,
+}
+
 /// Cache metrics response
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CacheMetricsResponse {
     pub quote_hits: u64,
     pub quote_misses: u64,
+    /// Cache hit ratio (hits / (hits + misses))
+    pub hit_ratio: f64,
     /// Total quote requests rejected because all inputs were stale
     pub stale_quote_rejections: u64,
     /// Total stale inputs excluded across all successful quotes
@@ -106,6 +119,12 @@ impl AssetInfo {
 pub struct PairsResponse {
     pub pairs: Vec<TradingPair>,
     pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_cursor: Option<String>,
 }
 
 /// Orderbook response
@@ -162,12 +181,24 @@ pub struct QuoteResponse {
     /// Rationale for quote venue selection
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rationale: Option<QuoteRationaleMetadata>,
+    /// Estimated price impact percentage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_impact: Option<String>,
     /// Venues excluded from routing and the reason for each exclusion
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclusion_diagnostics: Option<ExclusionDiagnostics>,
     /// Freshness metadata about the data sources used to compute this quote
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_freshness: Option<DataFreshness>,
+}
+
+/// Response for a batch quote request
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BatchQuoteResponse {
+    /// Array of quotes in the same order as requested
+    pub quotes: Vec<QuoteResponse>,
+    /// Total number of quotes successfully fetched
+    pub total: usize,
 }
 
 /// Trading route response (path only, no pricing)
@@ -180,6 +211,37 @@ pub struct RouteResponse {
     pub slippage_bps: u32,
     /// Unix timestamp (ms) when this route was generated
     pub timestamp: i64,
+}
+
+/// A comprehensive set of multiple ranked execution routes
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RoutesResponse {
+    pub base_asset: AssetInfo,
+    pub quote_asset: AssetInfo,
+    pub amount: String,
+    pub routes: Vec<RouteCandidate>,
+    pub timestamp: i64,
+}
+
+/// A single proposed N-hop route with pricing metrics
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RouteCandidate {
+    pub estimated_output: String,
+    pub impact_bps: u32,
+    pub score: f64,
+    pub policy_used: String,
+    pub path: Vec<RouteHop>,
+}
+
+/// A specific swap execution step inside a RouteCandidate
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RouteHop {
+    pub from_asset: AssetInfo,
+    pub to_asset: AssetInfo,
+    pub price: String,
+    pub amount_out_of_hop: String,
+    pub fee_bps: u32,
+    pub source: String,
 }
 
 /// Configuration for quote staleness detection
@@ -277,21 +339,74 @@ pub enum ExclusionReason {
     PolicyThreshold { threshold: f64 },
     Override,
     StaleData,
+    CircuitBreakerOpen,
+}
+
+/// Machine-readable error codes for API failures
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiErrorCode {
+    /// Unexpected server-side failure
+    InternalError,
+    /// Malformed request or invalid parameters
+    BadRequest,
+    /// Requested resource not found
+    NotFound,
+    /// Request parameters failed validation
+    ValidationError,
+    /// Client exceeded rate limits
+    RateLimitExceeded,
+    /// Server is temporarily overloaded
+    Overloaded,
+    /// Request lacks valid credentials
+    Unauthorized,
+    /// Invalid Stellar asset identifier
+    InvalidAsset,
+    /// Invalid amount requested
+    InvalidAmount,
+    /// Invalid slippage tolerance
+    InvalidSlippage,
+    /// Malformed asset identifier format
+    InvalidAssetFormat,
+    /// No executable trading route found
+    NoRoute,
+    /// Underlying market data is too stale to provide a quote
+    StaleMarketData,
+}
+
+impl ApiErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InternalError => "internal_error",
+            Self::BadRequest => "bad_request",
+            Self::NotFound => "not_found",
+            Self::ValidationError => "validation_error",
+            Self::RateLimitExceeded => "rate_limit_exceeded",
+            Self::Overloaded => "overloaded",
+            Self::Unauthorized => "unauthorized",
+            Self::InvalidAsset => "invalid_asset",
+            Self::InvalidAmount => "invalid_amount",
+            Self::InvalidSlippage => "invalid_slippage",
+            Self::InvalidAssetFormat => "invalid_asset_format",
+            Self::NoRoute => "no_route",
+            Self::StaleMarketData => "stale_market_data",
+        }
+    }
 }
 
 /// Error response
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
-    pub error: String,
+    pub error: ApiErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }
 
 impl ErrorResponse {
-    pub fn new(error: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(error: ApiErrorCode, message: impl Into<String>) -> Self {
         Self {
-            error: error.into(),
+            error,
             message: message.into(),
             details: None,
         }

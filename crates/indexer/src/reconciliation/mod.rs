@@ -39,11 +39,13 @@
 //! println!("Repairs attempted: {}/{}", run.successful_repairs, run.total_repairs_attempted);
 //! ```
 
+pub mod backfill;
 pub mod consistency;
 pub mod engine;
 pub mod metrics;
 pub mod repair;
 
+pub use backfill::{BackfillCheckpoint, BackfillManager, BackfillStatus};
 pub use consistency::{CheckThresholds, CheckType, ConsistencyCheckResult, DriftSeverity};
 pub use engine::{ReconciliationEngine, ReconciliationRun};
 pub use metrics::{DriftMetrics, MetricsSnapshot, ReconciliationMetrics};

@@ -51,5 +51,44 @@ describe("TransactionConfirmationModal", () => {
       ),
     ).toBeTruthy();
   });
-});
 
+  it("disables confirm action when connectivity is unavailable", () => {
+    const onOpenChange = vi.fn();
+
+    render(
+      <TransactionConfirmationModal
+        isOpen
+        onOpenChange={onOpenChange}
+        fromAsset="XLM"
+        fromAmount="10"
+        toAsset="USDC"
+        toAmount="100"
+        exchangeRate="10"
+        priceImpact="0.1%"
+        slippageTolerancePct={1}
+        networkFee="0.00001"
+        routePath={[
+          {
+            from_asset: { asset_type: "native" },
+            to_asset: {
+              asset_type: "credit_alphanum4",
+              asset_code: "USDC",
+              asset_issuer: "GA5Z...",
+            },
+            price: "0.105",
+            source: "sdex",
+          },
+        ]}
+        onConfirm={() => {}}
+        confirmDisabled
+        confirmDisabledReason="Reconnect to the internet before confirming this swap."
+        status="review"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Confirm Swap" })).toBeDisabled();
+    expect(
+      screen.getByText("Reconnect to the internet before confirming this swap."),
+    ).toBeTruthy();
+  });
+});

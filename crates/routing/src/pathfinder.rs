@@ -4,6 +4,7 @@ use crate::error::{Result, RoutingError};
 use crate::policy::RoutingPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use tracing::instrument;
 
 /// Configuration for path discovery
 #[derive(Clone, Debug)]
@@ -28,6 +29,8 @@ pub struct LiquidityEdge {
     pub venue_type: String,
     pub venue_ref: String,
     pub liquidity: i128,
+    pub price: f64,
+    pub fee_bps: u32,
 }
 
 /// Represents a path through liquidity sources
@@ -43,6 +46,8 @@ pub struct PathHop {
     pub destination_asset: String,
     pub venue_type: String,
     pub venue_ref: String,
+    pub price: f64,
+    pub fee_bps: u32,
 }
 
 /// N-hop pathfinder with safety bounds
@@ -55,7 +60,17 @@ impl Pathfinder {
         Self { config }
     }
 
+    pub fn config(&self) -> &PathfinderConfig {
+        &self.config
+    }
+
     /// Find optimal N-hop paths with cycle prevention and depth limits
+    #[instrument(skip(self, edges, policy), fields(
+        route.from = %from,
+        route.to = %to,
+        route.edges_count = edges.len(),
+        route.paths_found = tracing::field::Empty
+    ))]
     pub fn find_paths(
         &self,
         from: &str,
@@ -82,15 +97,15 @@ impl Pathfinder {
             ));
         }
 
-        // Build adjacency list, applying policy filters on venues
         let graph = self.build_graph(edges, policy)?;
 
-        // BFS with depth limit and cycle prevention
         let paths = self.bfs_paths(&graph, from, to, amount_in, policy.max_hops)?;
 
         if paths.is_empty() {
             return Err(RoutingError::NoRoute(from.to_string(), to.to_string()));
         }
+
+        tracing::Span::current().record("route.paths_found", paths.len());
 
         Ok(paths)
     }
@@ -168,6 +183,8 @@ impl Pathfinder {
                         destination_asset: edge.to.clone(),
                         venue_type: edge.venue_type.clone(),
                         venue_ref: edge.venue_ref.clone(),
+                        price: edge.price,
+                        fee_bps: edge.fee_bps,
                     };
 
                     // Simple output estimation (50bps slippage per hop)

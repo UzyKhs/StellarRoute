@@ -3,20 +3,30 @@
 //! Provides pathfinding algorithms for optimal swap routing across SDEX and Soroban AMM pools.
 //! Supports N-hop paths with safety bounds, cycle prevention, and price impact calculation.
 
+pub mod adaptive_routing;
+pub mod consensus;
 pub mod error;
+pub mod fixtures;
 pub mod health;
 pub mod impact;
 pub mod normalization;
 pub mod optimizer;
 pub mod pathfinder;
 pub mod policy;
+pub mod risk;
+pub mod simulator;
 
+pub use adaptive_routing::{AdaptiveError, AdaptivePolicy, AdaptiveRouter, QualityMetrics};
+pub use consensus::{
+    ConsensusDiagnostics, ConsensusEngine, ConsensusError, ConsensusPolicy, RouteCandidate,
+};
 pub use impact::{AmmQuoteCalculator, OrderbookImpactCalculator};
 pub use optimizer::{
     HybridOptimizer, OptimizerDiagnostics, OptimizerPolicy, PolicyPresets, RouteMetrics,
 };
 pub use pathfinder::{LiquidityEdge, Pathfinder, PathfinderConfig, SwapPath};
 pub use policy::RoutingPolicy;
+pub use risk::{AssetRiskLimit, ExclusionReason, RiskLimitConfig, RiskValidator, RouteExclusion};
 
 /// Routing engine with integrated pathfinding and impact calculations
 pub struct RoutingEngine {

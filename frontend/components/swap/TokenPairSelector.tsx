@@ -4,9 +4,18 @@ import React, { useMemo, useState } from "react";
 import { ArrowLeftRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { TradingPair } from "@/types";
+import { AssetIcon } from "@/components/shared/AssetIcon";
 import { TokenSearchModal } from "@/components/shared/TokenSearchModal";
 import { useRecentTokens } from "@/hooks/useRecentTokens";
 
@@ -69,12 +78,18 @@ function AssetButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex flex-col items-start gap-1 rounded-lg border bg-background p-3 transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed",
+        "flex flex-col items-start gap-2 rounded-lg border bg-background p-3 transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       )}
     >
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="text-lg font-semibold">{code || "Select"}</span>
+      <div className="flex items-center gap-2">
+        <AssetIcon
+          symbol={code || "Select"}
+          className="size-8 border-border/50 bg-primary/5"
+        />
+        <span className="text-lg font-semibold">{code || "Select"}</span>
+      </div>
       {issuer && (
         <span className="text-xs text-muted-foreground font-mono">
           {truncateIssuer(issuer)}
@@ -194,13 +209,17 @@ export function TokenPairSelector({
       <div className="space-y-4">
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <AssetButton
-              label="You sell"
-              code={selectedBaseInfo?.code || ""}
-              issuer={selectedBaseInfo?.issuer}
-              onClick={() => setBaseDialogOpen(true)}
-              disabled={loading || pairs.length === 0}
-            />
+            {loading ? (
+              <Skeleton className="h-[74px] w-full rounded-lg" />
+            ) : (
+              <AssetButton
+                label="You sell"
+                code={selectedBaseInfo?.code || ""}
+                issuer={selectedBaseInfo?.issuer}
+                onClick={() => setBaseDialogOpen(true)}
+                disabled={loading || pairs.length === 0}
+              />
+            )}
           </div>
 
           <Button
@@ -219,13 +238,17 @@ export function TokenPairSelector({
           </Button>
 
           <div className="flex-1">
-            <AssetButton
-              label="You buy"
-              code={selectedQuoteInfo?.code || ""}
-              issuer={selectedQuoteInfo?.issuer}
-              onClick={() => setQuoteDialogOpen(true)}
-              disabled={loading || pairs.length === 0 || !selectedBase}
-            />
+            {loading ? (
+              <Skeleton className="h-[74px] w-full rounded-lg" />
+            ) : (
+              <AssetButton
+                label="You buy"
+                code={selectedQuoteInfo?.code || ""}
+                issuer={selectedQuoteInfo?.issuer}
+                onClick={() => setQuoteDialogOpen(true)}
+                disabled={loading || pairs.length === 0 || !selectedBase}
+              />
+            )}
           </div>
         </div>
 

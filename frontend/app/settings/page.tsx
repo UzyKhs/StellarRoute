@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useSettings } from '@/components/providers/settings-provider';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -8,14 +8,11 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ThemeSetting } from '@/types/settings';
 import { toast } from 'sonner';
+import { LocaleSelector } from '@/components/settings/LocaleSelector';
 
 export default function SettingsPage() {
   const { settings, updateSlippage, updateTheme, resetSettings } = useSettings();
   const [localSlippage, setLocalSlippage] = useState(settings.slippageTolerance.toString());
-
-  useEffect(() => {
-    setLocalSlippage(settings.slippageTolerance.toString());
-  }, [settings.slippageTolerance]);
 
   const handleSlippageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setLocalSlippage(e.target.value);
@@ -41,6 +38,8 @@ export default function SettingsPage() {
       <h1 className="text-3xl font-bold mb-6">Settings</h1>
       
       <div className="space-y-6">
+        <LocaleSelector />
+
         <Card>
           <CardHeader>
             <CardTitle>Trade Settings</CardTitle>
