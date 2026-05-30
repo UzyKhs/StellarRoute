@@ -32,7 +32,9 @@ use crate::{
         request::{AssetPath, QuoteParams},
         AssetInfo, ExcludedVenueInfo as ApiExcludedVenueInfo,
         ExclusionDiagnostics as ApiExclusionDiagnostics, ExclusionReason as ApiExclusionReason,
-        PathStep, QuoteRationaleMetadata, QuoteResponse, VenueEvaluation,
+        PathStep, QuoteDecisionGraph, QuoteDecisionNode, QuoteRationaleMetadata,
+        QuoteReplayArtifact, QuoteReplayDecision, QuoteReplayRequest, QuoteReplayResult,
+        QuoteResponse, VenueEvaluation,
     },
     state::AppState,
 };
@@ -201,11 +203,19 @@ async fn get_quote_inner(
             let compute_res =
                 find_best_price(&state, &base_asset, &quote_asset, base_id, quote_id, amount).await;
 
-            let (price, path, rationale, api_diagnostics, freshness_outcome, fresh_timestamps) =
-                match compute_res {
-                    Ok(res) => res,
-                    Err(e) => return Arc::new(Err(e)),
-                };
+            let (
+                price,
+                path,
+                rationale,
+                api_diagnostics,
+                freshness_outcome,
+                fresh_timestamps,
+                decision_graph,
+                replay_artifact,
+            ) = match compute_res {
+                Ok(res) => res,
+                Err(e) => return Arc::new(Err(e)),
+            };
 
             // Req 4.2: increment stale_inputs_excluded counter when stale inputs were excluded
             let stale_count = freshness_outcome.stale.len();
@@ -251,7 +261,19 @@ async fn get_quote_inner(
                 rationale: Some(rationale),
                 exclusion_diagnostics: Some(api_diagnostics),
                 data_freshness,
+                decision_graph: explain.then_some(decision_graph),
+                replay_artifact: explain.then_some(replay_artifact),
             };
+
+            if explain {
+                let artifact_json =
+                    serde_json::to_string(&response.replay_artifact).unwrap_or_default();
+                tracing::info!(
+                    stage = "incident_replay_artifact",
+                    artifact = %artifact_json,
+                    "Persisted redacted replay artifact"
+                );
+            }
 
             // Cache the response (TTL: 2 seconds for quote data)
             if let Some(cache) = &state.cache {
@@ -332,7 +354,7 @@ pub async fn get_route(
     let quote_id = find_asset_id(&state, &quote_asset).await?;
 
     // For route endpoint, we reuse the same logic but return a simplified response
-    let (_, path, _, _, _, _) =
+    let (_, path, _, _, _, _, _, _) =
         find_best_price(&state, &base_asset, &quote_asset, base_id, quote_id, amount).await?;
 
     let response = crate::models::RouteResponse {
@@ -355,6 +377,8 @@ type FindBestPriceResult = (
     ApiExclusionDiagnostics,
     FreshnessOutcome,
     Vec<chrono::DateTime<chrono::Utc>>,
+    QuoteDecisionGraph,
+    QuoteReplayArtifact,
 );
 
 #[tracing::instrument(
@@ -588,7 +612,192 @@ async fn find_best_price(
         api_diagnostics,
         freshness_outcome,
         fresh_timestamps,
+        build_quote_decision_graph(base, quote, amount, &candidates, &selected),
+        build_replay_artifact(base, quote, amount, &candidates, &selected),
     ))
+}
+
+fn build_quote_decision_graph(
+    base: &AssetPath,
+    quote: &AssetPath,
+    amount: f64,
+    candidates: &[DirectVenueCandidate],
+    selected: &DirectVenueCandidate,
+) -> QuoteDecisionGraph {
+    let request = QuoteReplayRequest {
+        base_asset: canonical_asset(base),
+        quote_asset: canonical_asset(quote),
+        amount: format!("{:.7}", amount),
+    };
+
+    let candidate_rows: Vec<serde_json::Value> = candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "source": candidate.comparison_source(),
+                "venue_type": candidate.venue_type.clone(),
+                "venue_ref": candidate.venue_ref.clone(),
+                "price": format!("{:.7}", candidate.price),
+                "available_amount": format!("{:.7}", candidate.available_amount),
+                "executable": candidate.available_amount >= amount && candidate.price > 0.0
+            })
+        })
+        .collect();
+
+    let mut sorted_candidates = candidates.to_vec();
+    sorted_candidates.sort_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.venue_type.cmp(&b.venue_type))
+            .then_with(|| a.venue_ref.cmp(&b.venue_ref))
+    });
+    let ranking_rows: Vec<serde_json::Value> = sorted_candidates
+        .iter()
+        .map(|candidate| serde_json::json!(candidate.comparison_source()))
+        .collect();
+
+    QuoteDecisionGraph {
+        request,
+        nodes: vec![
+            QuoteDecisionNode {
+                stage: "decision_inputs".to_string(),
+                data: serde_json::json!({ "candidates": candidate_rows }),
+            },
+            QuoteDecisionNode {
+                stage: "candidate_ranking".to_string(),
+                data: serde_json::json!({ "sources": ranking_rows }),
+            },
+        ],
+        final_decision: QuoteReplayDecision {
+            selected_source: selected.comparison_source(),
+            strategy: "single_hop_direct_venue_comparison".to_string(),
+        },
+    }
+}
+
+fn build_replay_artifact(
+    base: &AssetPath,
+    quote: &AssetPath,
+    amount: f64,
+    candidates: &[DirectVenueCandidate],
+    selected: &DirectVenueCandidate,
+) -> QuoteReplayArtifact {
+    let graph = build_quote_decision_graph(base, quote, amount, candidates, selected);
+    let replayed_selected_source = replay_selected_source(candidates, amount);
+    let matches_production =
+        replayed_selected_source.as_deref() == Some(graph.final_decision.selected_source.as_str());
+    let redacted_graph = redact_decision_graph(&graph);
+    let serialized = serde_json::to_string(&redacted_graph).unwrap_or_default();
+    let artifact_hash = stable_fnv1a_64(&serialized);
+
+    QuoteReplayArtifact {
+        artifact_id: format!("replay:{artifact_hash:016x}"),
+        captured_at: chrono::Utc::now().timestamp_millis(),
+        graph: redacted_graph,
+        replay: QuoteReplayResult {
+            matches_production,
+            replayed_selected_source: replayed_selected_source.as_deref().map(redact_identifier),
+        },
+    }
+}
+
+fn replay_selected_source(candidates: &[DirectVenueCandidate], amount: f64) -> Option<String> {
+    let mut replay_candidates = candidates.to_vec();
+    replay_candidates.sort_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.venue_type.cmp(&b.venue_type))
+            .then_with(|| a.venue_ref.cmp(&b.venue_ref))
+    });
+    replay_candidates
+        .iter()
+        .find(|candidate| candidate.available_amount >= amount && candidate.price > 0.0)
+        .map(DirectVenueCandidate::comparison_source)
+}
+
+fn redact_decision_graph(graph: &QuoteDecisionGraph) -> QuoteDecisionGraph {
+    QuoteDecisionGraph {
+        request: QuoteReplayRequest {
+            base_asset: redact_identifier(&graph.request.base_asset),
+            quote_asset: redact_identifier(&graph.request.quote_asset),
+            amount: graph.request.amount.clone(),
+        },
+        nodes: graph
+            .nodes
+            .iter()
+            .map(|node| QuoteDecisionNode {
+                stage: node.stage.clone(),
+                data: redact_json_value(&node.data),
+            })
+            .collect(),
+        final_decision: QuoteReplayDecision {
+            selected_source: redact_identifier(&graph.final_decision.selected_source),
+            strategy: graph.final_decision.strategy.clone(),
+        },
+    }
+}
+
+fn redact_json_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let redacted = map
+                .iter()
+                .map(|(k, v)| {
+                    let value = if matches!(
+                        k.as_str(),
+                        "source" | "selected_source" | "venue_ref" | "base_asset" | "quote_asset"
+                    ) {
+                        match v {
+                            serde_json::Value::String(s) => {
+                                serde_json::Value::String(redact_identifier(s))
+                            }
+                            _ => redact_json_value(v),
+                        }
+                    } else {
+                        redact_json_value(v)
+                    };
+                    (k.clone(), value)
+                })
+                .collect();
+            serde_json::Value::Object(redacted)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_json_value).collect())
+        }
+        serde_json::Value::String(s) if s.contains(':') => {
+            serde_json::Value::String(redact_identifier(s))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn redact_identifier(input: &str) -> String {
+    if let Some((prefix, _)) = input.split_once(':') {
+        format!("{prefix}:REDACTED")
+    } else if input == "native"
+        || (input.len() <= 12 && input.chars().all(|c| c.is_ascii_uppercase()))
+    {
+        input.to_string()
+    } else {
+        "REDACTED".to_string()
+    }
+}
+
+fn canonical_asset(asset: &AssetPath) -> String {
+    match asset.asset_issuer.as_deref() {
+        Some(issuer) if asset.asset_code != "native" => format!("{}:{}", asset.asset_code, issuer),
+        _ => asset.asset_code.clone(),
+    }
+}
+
+fn stable_fnv1a_64(input: &str) -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x00000100000001B3;
+    input.as_bytes().iter().fold(OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -838,6 +1047,42 @@ mod tests {
 
         let result = evaluate_single_hop_direct_venues(candidates, 10.0);
         assert!(matches!(result, Err(ApiError::NoRouteFound)));
+    }
+
+    #[test]
+    fn deterministic_replay_matches_selected_source() {
+        let candidates = vec![
+            candidate("sdex", "offer2", 1.01, 50.0),
+            candidate("amm", "pool1", 1.00, 50.0),
+            candidate("sdex", "offer1", 1.00, 50.0),
+        ];
+
+        let (selected, _) =
+            evaluate_single_hop_direct_venues(candidates.clone(), 10.0).expect("must select");
+        let replayed = replay_selected_source(&candidates, 10.0);
+
+        assert_eq!(
+            replayed.as_deref(),
+            Some(selected.comparison_source().as_str())
+        );
+    }
+
+    #[test]
+    fn replay_artifact_redacts_sensitive_identifiers() {
+        let base =
+            AssetPath::parse("USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
+                .expect("base parse");
+        let quote = AssetPath::parse("native").expect("quote parse");
+        let candidates = vec![candidate("sdex", "offer-sensitive", 1.0, 100.0)];
+        let selected = candidates[0].clone();
+
+        let artifact = build_replay_artifact(&base, &quote, 10.0, &candidates, &selected);
+        let json = serde_json::to_string(&artifact).expect("serialize artifact");
+
+        assert!(json.contains("USDC:REDACTED"));
+        assert!(json.contains("sdex:REDACTED"));
+        assert!(!json.contains("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"));
+        assert!(!json.contains("offer-sensitive"));
     }
 
     // --- Req 4.1: stale_quote_rejections counter ---
