@@ -43,6 +43,8 @@ fn quote_response_includes_rationale_metadata() {
         }),
         exclusion_diagnostics: None,
         data_freshness: None,
+        decision_graph: None,
+        replay_artifact: None,
     };
 
     let json = serde_json::to_value(&response).expect("serialization failed");

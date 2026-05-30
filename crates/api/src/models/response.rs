@@ -168,6 +168,12 @@ pub struct QuoteResponse {
     /// Freshness metadata about the data sources used to compute this quote
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_freshness: Option<DataFreshness>,
+    /// Full quote decision graph for deterministic incident replay
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_graph: Option<QuoteDecisionGraph>,
+    /// Redacted replay artifact persisted for incident triage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_artifact: Option<QuoteReplayArtifact>,
 }
 
 /// Trading route response (path only, no pricing)
@@ -233,6 +239,52 @@ pub struct QuoteRationaleMetadata {
     pub strategy: String,
     pub selected_source: String,
     pub compared_venues: Vec<VenueEvaluation>,
+}
+
+/// Full decision graph captured during quote computation
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QuoteDecisionGraph {
+    pub request: QuoteReplayRequest,
+    pub nodes: Vec<QuoteDecisionNode>,
+    pub final_decision: QuoteReplayDecision,
+}
+
+/// Request snapshot used as deterministic replay input
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QuoteReplayRequest {
+    pub base_asset: String,
+    pub quote_asset: String,
+    pub amount: String,
+}
+
+/// Intermediate node in the quote decision graph
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QuoteDecisionNode {
+    pub stage: String,
+    pub data: serde_json::Value,
+}
+
+/// Final decision metadata for replay validation
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QuoteReplayDecision {
+    pub selected_source: String,
+    pub strategy: String,
+}
+
+/// Redacted artifact persisted for forensic replay
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QuoteReplayArtifact {
+    pub artifact_id: String,
+    pub captured_at: i64,
+    pub graph: QuoteDecisionGraph,
+    pub replay: QuoteReplayResult,
+}
+
+/// Result of deterministic replay against captured decision graph
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QuoteReplayResult {
+    pub replayed_selected_source: Option<String>,
+    pub matches_production: bool,
 }
 
 /// Per-venue comparison details for direct route evaluation
